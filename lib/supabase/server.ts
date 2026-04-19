@@ -32,7 +32,7 @@ export function createClient() {
     } catch (error: any) {
       const message = String(error?.message || '');
       if (/invalid refresh token|refresh token not found/i.test(message)) {
-        return { data: { user: null }, error: null } as Awaited<ReturnType<typeof originalGetUser>>;
+        return { data: { user: null }, error: null } as unknown as Awaited<ReturnType<typeof originalGetUser>>;
       }
       throw error;
     }
