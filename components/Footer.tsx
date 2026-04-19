@@ -11,6 +11,13 @@ export default function Footer() {
           Terms and Conditions
         </Link>
         <span className="mx-2 text-slate-300">·</span>
+        <Link
+          href="/privacy"
+          className="font-medium text-indigo-700 underline-offset-2 hover:text-indigo-900 hover:underline"
+        >
+          Privacy Policy
+        </Link>
+        <span className="mx-2 text-slate-300">·</span>
         <span className="text-slate-500">Voice AI Coach</span>
       </div>
     </footer>

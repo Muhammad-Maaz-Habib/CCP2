@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import CrisisPopup from './CrisisPopup';
 
 type SessionStatus = 'idle' | 'listening' | 'thinking' | 'speaking';
 
@@ -31,6 +32,119 @@ const TTS_LANGUAGES = [
   { value: 'it-IT', label: 'Italian' },
 ];
 const TTS_ENGINES: Array<'standard' | 'neural' | 'generative'> = ['standard', 'neural', 'generative'];
+const CRISIS_DETECTION_CONFIG = {
+  HIGH_CONFIDENCE_PHRASES: [
+    'i want to kill myself',
+    'i want to die',
+    'i want to end my life',
+    'im going to kill myself',
+    'im going to end it',
+    'i dont want to live anymore',
+    'i dont want to be here anymore',
+    'i want to hurt myself',
+    'ive been hurting myself',
+    'ive been cutting myself',
+    'i cut myself',
+    'im cutting myself',
+    'i took too many pills',
+    'i overdosed',
+    'i tried to kill myself',
+    'i attempted suicide',
+    'i have a plan to end my life',
+    'ive been thinking about suicide',
+    'ive been thinking about killing myself',
+    'thinking about ending it all',
+    'cant go on anymore',
+    'no reason to live',
+    'better off dead',
+    'better off without me',
+    'nobody would miss me',
+    'i give up on life',
+  ],
+  SENSITIVE_WORDS: [
+    'suicide',
+    'suicidal',
+    'self harm',
+    'self-harm',
+    'overdose',
+    'cutting',
+    'end it all',
+    'end my life',
+    'kill myself',
+    'hurt myself',
+  ],
+  PERSONAL_DISTRESS_INDICATORS: [
+    'i feel',
+    'i am',
+    "i'm",
+    "i've",
+    'i have',
+    "i can't",
+    'i cannot',
+    'i keep',
+    'i need help',
+    'help me',
+    "i'm scared",
+    "i'm afraid",
+    "i'm struggling",
+    "i'm suffering",
+    'feeling like',
+    'want to',
+  ],
+  SUPPRESSION_CONTEXT_SIGNALS: [
+    'research',
+    'study',
+    'studying',
+    'statistics',
+    'rates',
+    'data',
+    'analysis',
+    'paper',
+    'thesis',
+    'dissertation',
+    'survey',
+    'report',
+    'literature',
+    'journal',
+    'academic',
+    'university',
+    'college',
+    'school project',
+    'class',
+    'assignment',
+    'my patient',
+    'my client',
+    'my students',
+    'my users',
+    'working with',
+    'i work in',
+    'i work with',
+    "i'm a therapist",
+    "i'm a counselor",
+    "i'm a doctor",
+    "i'm a nurse",
+    "i'm a teacher",
+    "i'm a social worker",
+    'mental health professional',
+    'clinical',
+    'prevention program',
+    'awareness',
+    'public health',
+    'policy',
+    'they want to',
+    'he wants to',
+    'she wants to',
+    'someone else',
+    'a friend of mine',
+    'in the news',
+    'i read about',
+    'i heard about',
+    'i watched',
+    'documentary',
+    'article',
+    'book about',
+  ],
+} as const;
 
 const loadPuterScript = () =>
   new Promise<void>((resolve, reject) => {
@@ -114,6 +228,41 @@ function mimeToExtension(mimeType?: string) {
   return 'webm';
 }
 
+function normalizeForCrisisDetection(text: string): string {
+  return text.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function hasCrisisContent(text: string): boolean {
+  const normalized = normalizeForCrisisDetection(text || '');
+  if (!normalized) return false;
+
+  const {
+    HIGH_CONFIDENCE_PHRASES,
+    SENSITIVE_WORDS,
+    PERSONAL_DISTRESS_INDICATORS,
+    SUPPRESSION_CONTEXT_SIGNALS,
+  } = CRISIS_DETECTION_CONFIG;
+
+  const hasSuppressionContext = SUPPRESSION_CONTEXT_SIGNALS.some((signal) =>
+    normalized.includes(normalizeForCrisisDetection(signal)),
+  );
+  if (hasSuppressionContext) return false;
+
+  const hasHighConfidencePhrase = HIGH_CONFIDENCE_PHRASES.some((phrase) =>
+    normalized.includes(normalizeForCrisisDetection(phrase)),
+  );
+  if (hasHighConfidencePhrase) return true;
+
+  const hasSensitiveWord = SENSITIVE_WORDS.some((word) =>
+    normalized.includes(normalizeForCrisisDetection(word)),
+  );
+  const hasPersonalDistress = PERSONAL_DISTRESS_INDICATORS.some((indicator) =>
+    normalized.includes(normalizeForCrisisDetection(indicator)),
+  );
+
+  return hasSensitiveWord && hasPersonalDistress;
+}
+
 export default function SessionScreen({ sessionId, selectedTraits, onSessionEnd }: SessionScreenProps) {
   const [status, setStatus] = useState<SessionStatus>('idle');
   const [isRecording, setIsRecording] = useState(false);
@@ -123,6 +272,7 @@ export default function SessionScreen({ sessionId, selectedTraits, onSessionEnd 
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
   const [ttsLanguage, setTtsLanguage] = useState<string>('en-US');
   const [ttsEngine, setTtsEngine] = useState<'standard' | 'neural' | 'generative'>('standard');
+  const [showCrisisPopup, setShowCrisisPopup] = useState(false);
 
   // Local session id state (start/refresh session if needed)
   const [localSessionId, setLocalSessionId] = useState<string | null>(sessionId || null);
@@ -132,9 +282,50 @@ export default function SessionScreen({ sessionId, selectedTraits, onSessionEnd 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
+  const puterAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const historyRef = useRef<Array<{ role: 'user' | 'assistant'; content: string }>>([]);
   const [conversationHistory, setConversationHistory] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([]);
+
+  const pauseVoiceSession = useCallback(() => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    setIsRecording(false);
+
+    if (audioElementRef.current) {
+      audioElementRef.current.pause();
+      audioElementRef.current.currentTime = 0;
+    }
+
+    if (puterAudioRef.current) {
+      puterAudioRef.current.pause();
+      puterAudioRef.current.currentTime = 0;
+      puterAudioRef.current = null;
+    }
+
+    setStatus('idle');
+  }, []);
+
+  const triggerCrisisSupport = useCallback(() => {
+    pauseVoiceSession();
+    setError(null);
+    setShowCrisisPopup(true);
+  }, [pauseVoiceSession]);
+
+  // Crisis detection policy:
+  // 1) suppress known academic/professional/third-person contexts,
+  // 2) trigger on high-confidence first-person crisis phrases,
+  // 3) otherwise trigger only when sensitive words and first-person distress co-occur.
+  // Wrapped in try/catch to ensure detection failures never break coaching flow.
+  const shouldTriggerCrisisSupport = useCallback((text: string): boolean => {
+    try {
+      return hasCrisisContent(text || '');
+    } catch (err) {
+      console.warn('[client] crisis keyword detection failed silently', err);
+      return false;
+    }
+  }, []);
 
   useEffect(() => {
     // keep localSessionId in sync if parent passes a different prop
@@ -247,6 +438,7 @@ export default function SessionScreen({ sessionId, selectedTraits, onSessionEnd 
   };
 
   const startRecording = () => {
+    if (showCrisisPopup) return;
     if (!micPermissionGranted || !micStream) {
       setError('Please enable microphone first.');
       return;
@@ -345,6 +537,12 @@ export default function SessionScreen({ sessionId, selectedTraits, onSessionEnd 
       const userText = (sttResult?.text || sttResult || '').toString().trim();
       if (!userText) throw new Error('No transcription returned');
 
+      // Intercept crisis language before sending anything to Puter chat APIs.
+      if (shouldTriggerCrisisSupport(userText)) {
+        triggerCrisisSupport();
+        return;
+      }
+
       const limitedHistory = historyRef.current.slice(-MAX_HISTORY_TURNS * 2);
       const nextHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [
         ...limitedHistory,
@@ -365,6 +563,12 @@ export default function SessionScreen({ sessionId, selectedTraits, onSessionEnd 
 
       let aiText = extractPuterText(llmResponse);
       aiText = normalizeAiResponse(aiText);
+
+      // Run crisis checks only after a successful AI response exists.
+      if (shouldTriggerCrisisSupport(`${userText}\n${aiText}`)) {
+        triggerCrisisSupport();
+        return;
+      }
 
       const needsRepair =
         wordCount(aiText) < TARGET_MIN_WORDS || !/[.!?]$/.test(aiText.trim());
@@ -394,21 +598,30 @@ export default function SessionScreen({ sessionId, selectedTraits, onSessionEnd 
         engine: ttsEngine,
         language: ttsLanguage,
       });
+      puterAudioRef.current = audio;
 
       audio.onended = () => {
+        puterAudioRef.current = null;
         setStatus('idle');
         setCanRequestSummary(true);
       };
       audio.onerror = () => {
+        puterAudioRef.current = null;
         setError('Failed to play response audio');
         setStatus('idle');
       };
 
       audio.play().catch(() => {
+        puterAudioRef.current = null;
         setError('Failed to play response audio');
         setStatus('idle');
       });
     } catch (err: any) {
+      const errorCode = String(err?.code || err?.error?.code || '').toLowerCase();
+      if (errorCode === 'moderation_failed') {
+        triggerCrisisSupport();
+        return;
+      }
       console.error('[client] puter turn error', err);
       setError(err?.message || 'Puter turn failed');
       setStatus('idle');
@@ -555,6 +768,27 @@ export default function SessionScreen({ sessionId, selectedTraits, onSessionEnd 
       return;
     }
 
+    const possibleCrisisSignals = [
+      data?.transcript,
+      data?.transcription,
+      data?.userText,
+      data?.text,
+      data?.response,
+      data?.aiText,
+      data?.assistantResponse,
+      data?.coachResponse,
+      data?.message,
+      data?.detectedTopic,
+      data?.safetyReason,
+    ]
+      .filter((value): value is string => typeof value === 'string')
+      .join(' ');
+
+    if (shouldTriggerCrisisSupport(possibleCrisisSignals)) {
+      triggerCrisisSupport();
+      return;
+    }
+
     if (data.audioBase64) {
       setStatus('speaking');
       try {
@@ -638,6 +872,17 @@ export default function SessionScreen({ sessionId, selectedTraits, onSessionEnd 
       setError('Failed to generate summary');
       setStatus('idle');
     }
+  };
+
+  const handleCloseCrisisPopup = () => {
+    setShowCrisisPopup(false);
+    setStatus('idle');
+  };
+
+  const handleEndSessionFromCrisis = () => {
+    setShowCrisisPopup(false);
+    pauseVoiceSession();
+    onSessionEnd('Session ended. Please reach out to a crisis support resource if you need immediate help.');
   };
 
   const getStatusText = () => {
@@ -752,7 +997,7 @@ export default function SessionScreen({ sessionId, selectedTraits, onSessionEnd 
         onMouseUp={stopRecording}
         onTouchStart={(e) => { e.preventDefault(); startRecording(); }}
         onTouchEnd={(e) => { e.preventDefault(); stopRecording(); }}
-        disabled={!micPermissionGranted || status === 'thinking' || status === 'speaking' || !!startingSessionRef.current}
+        disabled={!micPermissionGranted || showCrisisPopup || status === 'thinking' || status === 'speaking' || !!startingSessionRef.current}
         className={`
           w-full py-6 rounded-lg text-lg font-semibold transition-all mb-4
           ${!micPermissionGranted
@@ -772,6 +1017,8 @@ export default function SessionScreen({ sessionId, selectedTraits, onSessionEnd 
           Request Summary
         </button>
       )}
+
+      <CrisisPopup isOpen={showCrisisPopup} onClose={handleCloseCrisisPopup} onEndSession={handleEndSessionFromCrisis} />
     </div>
   );
 }

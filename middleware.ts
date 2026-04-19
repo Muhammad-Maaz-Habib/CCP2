@@ -15,9 +15,19 @@ function isPublicPath(pathname: string) {
 export async function middleware(request: NextRequest) {
   const { supabase, response } = createMiddlewareClient(request);
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let user = null;
+  try {
+    const {
+      data: { user: fetchedUser },
+    } = await supabase.auth.getUser();
+    user = fetchedUser;
+  } catch (error: any) {
+    const message = String(error?.message || '');
+    if (!/invalid refresh token|refresh token not found/i.test(message)) {
+      console.error('[middleware] session refresh failed', error);
+    }
+    user = null;
+  }
 
   const { pathname } = request.nextUrl;
 

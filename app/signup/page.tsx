@@ -19,7 +19,7 @@ export default function SignupPage() {
     e.preventDefault();
     setError(null);
     if (!agreed) {
-      setError('You must agree to the Terms and Conditions to create an account.');
+      setError('You must agree to the Terms and Conditions and Privacy Policy to create an account.');
       return;
     }
     setLoading(true);
@@ -108,6 +108,10 @@ export default function SignupPage() {
             I agree to the{' '}
             <Link href="/terms" className="font-medium text-indigo-600 underline-offset-2 hover:underline">
               Terms and Conditions
+            </Link>
+            {' '}and{' '}
+            <Link href="/privacy" className="font-medium text-indigo-600 underline-offset-2 hover:underline">
+              Privacy Policy
             </Link>
             .
           </label>
